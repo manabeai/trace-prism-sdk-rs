@@ -1,6 +1,6 @@
 # algo-vis Rust crate
 
-`algo_vis::record!` sends ordinary Rust values to a local algo-vis server when one is running. No custom Array, Set, or Map wrapper is needed. The macro records a typed span ID path, an optional `from` reference, and any number of named values.
+`algo_vis::record!` は通常の Rust 値を型付きの観測フレームとして送信する。専用の Array・Set・Map 型は不要。span ID の配列、任意の `from` 参照、任意個の値を受け取る。
 
 ```rust
 use algo_vis::record;
@@ -14,7 +14,7 @@ for i in 0..3 {
 }
 ```
 
-Add the crate to a local Cargo project with a path dependency:
+ローカルの Cargo プロジェクトには path dependency として追加する。
 
 ```toml
 [features]
@@ -25,7 +25,7 @@ viz = ["dep:algo-vis"]
 algo-vis = { path = "/home/mana/programs/algo-visualizer/sdk/rust", optional = true }
 ```
 
-For a source that is also submitted as a standalone AtCoder file, gate the import and provide a no-op fallback. The fallback does not evaluate visualization arguments, so recording expressions should not have algorithmic side effects.
+AtCoder に単体ファイルで提出するソースでは、feature がないときだけ空マクロを定義する。この場合、可視化用引数は評価されないため、記録式にアルゴリズム本体の副作用を含めないこと。
 
 ```rust
 #[cfg(feature = "viz")]
@@ -34,6 +34,6 @@ use algo_vis::record;
 macro_rules! record { ($($tokens:tt)*) => { () }; }
 ```
 
-Run `npm run build && npm run serve` in the algo-vis repository, then run the contest project with `cargo run --bin <name>`. Open `http://127.0.0.1:4317/`. Each run is saved separately; when the server is absent, the contest program continues without recording.
+ビューワと受信サーバーは言語共通の CLI で起動する。リポジトリで `npm install && npm run build` を済ませ、別のターミナルで `npm run serve`（`npm link` 済みなら `algo-vis serve`）を実行する。その後、競プロコードを通常の `cargo run --bin <name>` で実行する。`record!` は起動済みサーバーへ送信し、`http://127.0.0.1:4317/` で履歴を確認できる。SDK はサーバーやブラウザを起動しない。サーバーがない場合は記録を無効化してプログラム本体を続行し、標準出力は変更しない。
 
-The crate emits `viz.trace/v2` snapshot/patch records. This is a local path dependency for the MVP; it has not been published to crates.io.
+`VIZ_PORT` で送信先ポート、`VIZ_TRACE_PATH` でファイル出力先、`VIZ_RUN_ID` で実行 ID を指定できる。crate は現在ローカル path dependency で、crates.io には未公開。
