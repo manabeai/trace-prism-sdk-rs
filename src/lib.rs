@@ -11,7 +11,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub struct FrameRef(u64);
 
 impl FrameRef {
-    pub fn disabled() -> Self { Self(u64::MAX) }
+    pub fn disabled() -> Self {
+        Self(u64::MAX)
+    }
 }
 
 pub struct Field {
@@ -25,7 +27,10 @@ pub fn field<T: Serialize + ?Sized>(name: &'static str, value: &T) -> Field {
     Field {
         name,
         rust_type,
-        value: normalize(serde_json::to_value(value).expect("algo-vis: value could not be serialized"), rust_type),
+        value: normalize(
+            serde_json::to_value(value).expect("algo-vis: value could not be serialized"),
+            rust_type,
+        ),
     }
 }
 
@@ -37,38 +42,77 @@ fn normalize(value: Value, hint: &str) -> Value {
         Value::Number(v) => json!({"t":"float","v":v.to_string()}),
         Value::String(v) => json!({"t":"string","v":v}),
         Value::Array(items) => {
-            let tag = if hint.contains("HashSet<") || hint.contains("BTreeSet<") { "set" } else { "array" };
-            let mut items = items.into_iter().map(|item| normalize(item, "")).collect::<Vec<_>>();
-            if tag == "set" { items.sort_by_key(Value::to_string); }
+            let tag = if hint.contains("HashSet<") || hint.contains("BTreeSet<") {
+                "set"
+            } else {
+                "array"
+            };
+            let mut items = items
+                .into_iter()
+                .map(|item| normalize(item, ""))
+                .collect::<Vec<_>>();
+            if tag == "set" {
+                items.sort_by_key(Value::to_string);
+            }
             json!({"t":tag,"items":items})
         }
         Value::Object(fields) if hint.contains("HashMap<") || hint.contains("BTreeMap<") => {
-            let key_hint = hint.split('<').nth(1).unwrap_or("").split(',').next().unwrap_or("").trim();
-            let entries: Vec<Value> = fields.into_iter().map(|(key,value)| {
-                let typed_key = if is_integer_type(key_hint) {
-                    if key.parse::<i128>().is_err() && key.parse::<u128>().is_err() { panic!("algo-vis: invalid integer map key") }
-                    json!({"t":"int","v":key})
-                } else if key_hint == "bool" {
-                    json!({"t":"bool","v":key == "true"})
-                } else {
-                    json!({"t":"string","v":key})
-                };
-                json!({"key":typed_key,"value":normalize(value, "")})
-            }).collect();
+            let key_hint = hint
+                .split('<')
+                .nth(1)
+                .unwrap_or("")
+                .split(',')
+                .next()
+                .unwrap_or("")
+                .trim();
+            let entries: Vec<Value> = fields
+                .into_iter()
+                .map(|(key, value)| {
+                    let typed_key = if is_integer_type(key_hint) {
+                        if key.parse::<i128>().is_err() && key.parse::<u128>().is_err() {
+                            panic!("algo-vis: invalid integer map key")
+                        }
+                        json!({"t":"int","v":key})
+                    } else if key_hint == "bool" {
+                        json!({"t":"bool","v":key == "true"})
+                    } else {
+                        json!({"t":"string","v":key})
+                    };
+                    json!({"key":typed_key,"value":normalize(value, "")})
+                })
+                .collect();
             json!({"t":"map","entries":entries})
         }
-        Value::Object(fields) => json!({"t":"record","fields":fields.into_iter().map(|(name,value)| {
+        Value::Object(fields) => {
+            json!({"t":"record","fields":fields.into_iter().map(|(name,value)| {
             json!({"name":name,"value":normalize(value, "")})
-        }).collect::<Vec<_>>() }),
+        }).collect::<Vec<_>>() })
+        }
     }
 }
 
 fn is_integer_type(name: &str) -> bool {
-    matches!(name, "i8"|"i16"|"i32"|"i64"|"i128"|"isize"|"u8"|"u16"|"u32"|"u64"|"u128"|"usize")
+    matches!(
+        name,
+        "i8" | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+    )
 }
 
 fn is_integer_number(number: &serde_json::Number) -> bool {
-    !number.to_string().bytes().any(|byte| matches!(byte, b'.'|b'e'|b'E'))
+    !number
+        .to_string()
+        .bytes()
+        .any(|byte| matches!(byte, b'.' | b'e' | b'E'))
 }
 
 pub fn span_segment<T: Serialize + ?Sized>(value: &T) -> Value {
@@ -91,41 +135,86 @@ struct Recorder {
     sink: Sink,
 }
 
-enum Sink { File(BufWriter<File>), Http(u16), Disabled }
+enum Sink {
+    File(BufWriter<File>),
+    Http(u16),
+    Disabled,
+}
 
 static RECORDER: OnceLock<Option<Mutex<Recorder>>> = OnceLock::new();
 
 fn recorder() -> Option<&'static Mutex<Recorder>> {
-    RECORDER.get_or_init(|| {
-        let sink = if let Some(path) = std::env::var_os("VIZ_TRACE_PATH") {
-            let file = OpenOptions::new().create(true).append(true).open(path)
-                .expect("algo-vis: cannot open trace file");
-            Sink::File(BufWriter::new(file))
-        } else {
-            let port = std::env::var("VIZ_PORT").ok().and_then(|text| text.parse::<u16>().ok()).unwrap_or(4317);
-            let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
-            if TcpStream::connect_timeout(&address.into(), Duration::from_millis(100)).is_err() { return None; }
-            Sink::Http(port)
-        };
-        let millis = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
-        let generated_id = format!("run-{millis}-{}", std::process::id());
-        let run_id = std::env::var("VIZ_RUN_ID").ok()
-            .filter(|id| !id.is_empty() && id.len() <= 128 && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'))
-            .unwrap_or(generated_id);
-        Some(Mutex::new(Recorder { next_seq: 0, run_id, values: BTreeMap::new(), sink }))
-    }).as_ref()
+    RECORDER
+        .get_or_init(|| {
+            let sink = if let Some(path) = std::env::var_os("VIZ_TRACE_PATH") {
+                let file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .expect("algo-vis: cannot open trace file");
+                Sink::File(BufWriter::new(file))
+            } else {
+                let port = std::env::var("VIZ_PORT")
+                    .ok()
+                    .and_then(|text| text.parse::<u16>().ok())
+                    .unwrap_or(4317);
+                let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
+                if TcpStream::connect_timeout(&address.into(), Duration::from_millis(100)).is_err()
+                {
+                    return None;
+                }
+                Sink::Http(port)
+            };
+            let millis = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis();
+            let generated_id = format!("run-{millis}-{}", std::process::id());
+            let run_id = std::env::var("VIZ_RUN_ID")
+                .ok()
+                .filter(|id| {
+                    !id.is_empty()
+                        && id.len() <= 128
+                        && id.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'
+                        })
+                })
+                .unwrap_or(generated_id);
+            Some(Mutex::new(Recorder {
+                next_seq: 0,
+                run_id,
+                values: BTreeMap::new(),
+                sink,
+            }))
+        })
+        .as_ref()
 }
 
-pub fn enabled() -> bool { recorder().is_some() }
+pub fn enabled() -> bool {
+    recorder().is_some()
+}
 
-pub fn record(span: Vec<Value>, from: Option<FrameRef>, fields: Vec<Field>, source: (&str, u32)) -> FrameRef {
-    let mut state = recorder().expect("algo-vis: recorder is disabled").lock().expect("algo-vis: recorder lock poisoned");
+pub fn record(
+    span: Vec<Value>,
+    from: Option<FrameRef>,
+    fields: Vec<Field>,
+    source: (&str, u32),
+) -> FrameRef {
+    let mut state = recorder()
+        .expect("algo-vis: recorder is disabled")
+        .lock()
+        .expect("algo-vis: recorder lock poisoned");
     let seq = state.next_seq;
     if let Some(parent) = from {
-        assert!(parent.0 < seq, "algo-vis: from must refer to an earlier frame in this run");
+        assert!(
+            parent.0 < seq,
+            "algo-vis: from must refer to an earlier frame in this run"
+        );
     }
     let mut observed = BTreeMap::new();
-    for field in fields { observed.insert(field.name, field); }
+    for field in fields {
+        observed.insert(field.name, field);
+    }
     let mut ops = Vec::new();
     for field in observed.into_values() {
         let next = json!({"name":field.name,"sourceType":field.rust_type,"value":field.value});
@@ -140,7 +229,9 @@ pub fn record(span: Vec<Value>, from: Option<FrameRef>, fields: Vec<Field>, sour
         "source": {"file": source.0, "line": source.1},
         "runId": state.run_id, "pid": std::process::id(), "producer": "rust"
     });
-    if let Some(parent) = from { event["from"] = json!(parent.0.to_string()); }
+    if let Some(parent) = from {
+        event["from"] = json!(parent.0.to_string());
+    }
     if seq == 0 {
         event["values"] = Value::Array(state.values.values().cloned().collect());
     } else {
@@ -149,8 +240,12 @@ pub fn record(span: Vec<Value>, from: Option<FrameRef>, fields: Vec<Field>, sour
     let body = serde_json::to_vec(&event).expect("algo-vis: event encode failed");
     match &mut state.sink {
         Sink::File(writer) => {
-            writer.write_all(&body).expect("algo-vis: trace write failed");
-            writer.write_all(b"\n").expect("algo-vis: trace write failed");
+            writer
+                .write_all(&body)
+                .expect("algo-vis: trace write failed");
+            writer
+                .write_all(b"\n")
+                .expect("algo-vis: trace write failed");
             writer.flush().expect("algo-vis: trace flush failed");
         }
         Sink::Http(port) => {
@@ -179,8 +274,12 @@ pub fn record(span: Vec<Value>, from: Option<FrameRef>, fields: Vec<Field>, sour
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __record_value {
-    ($name:ident) => { &$name };
-    ($name:ident = $value:expr) => { &$value };
+    ($name:ident) => {
+        &$name
+    };
+    ($name:ident = $value:expr) => {
+        &$value
+    };
 }
 
 #[doc(hidden)]
@@ -212,10 +311,16 @@ mod tests {
 
     #[test]
     fn preserves_wide_integers_and_typed_map_keys() {
-        assert_eq!(field("wide", &i128::MAX).value, json!({"t":"int","v":i128::MAX.to_string()}));
+        assert_eq!(
+            field("wide", &i128::MAX).value,
+            json!({"t":"int","v":i128::MAX.to_string()})
+        );
         let map = BTreeMap::from([(1_i32, 9_i32)]);
-        assert_eq!(field("map", &map).value, json!({"t":"map","entries":[{
-            "key":{"t":"int","v":"1"},"value":{"t":"int","v":"9"}
-        }]}));
+        assert_eq!(
+            field("map", &map).value,
+            json!({"t":"map","entries":[{
+                "key":{"t":"int","v":"1"},"value":{"t":"int","v":"9"}
+            }]})
+        );
     }
 }
