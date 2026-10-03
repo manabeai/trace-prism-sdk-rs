@@ -1,3 +1,4 @@
+use serde::ser::{SerializeMap, Serializer};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -14,6 +15,20 @@ impl FrameRef {
     pub fn disabled() -> Self {
         Self(u64::MAX)
     }
+}
+
+impl Serialize for FrameRef {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Distinguishes a frame handle from a user ID in the generic `from:` macro argument.
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry("$algoVisFrameRef", &self.0)?;
+        map.end()
+    }
+}
+
+pub enum Origin {
+    Frame(FrameRef),
+    Id(Vec<Value>),
 }
 
 pub struct Field {
@@ -115,10 +130,9 @@ fn is_integer_number(number: &serde_json::Number) -> bool {
         .any(|byte| matches!(byte, b'.' | b'e' | b'E'))
 }
 
-pub fn span_segment<T: Serialize + ?Sized>(value: &T) -> Value {
-    let raw = serde_json::to_value(value).expect("algo-vis: span ID could not be serialized");
+fn normalize_segment(raw: Value) -> Value {
     let kind = match &raw {
-        Value::Null => "null",
+        Value::Null => return json!({"t":"null"}),
         Value::Bool(_) => "bool",
         Value::Number(n) if is_integer_number(n) => "int",
         Value::Number(_) => "float",
@@ -126,6 +140,27 @@ pub fn span_segment<T: Serialize + ?Sized>(value: &T) -> Value {
         _ => panic!("algo-vis: span ID must be a scalar"),
     };
     json!({"t": kind, "v": if raw.is_number() { Value::String(raw.to_string()) } else { raw }})
+}
+
+pub fn span_segment<T: Serialize + ?Sized>(value: &T) -> Value {
+    normalize_segment(
+        serde_json::to_value(value).expect("algo-vis: span ID could not be serialized"),
+    )
+}
+
+pub fn origin<T: Serialize + ?Sized>(value: &T) -> Origin {
+    let raw = serde_json::to_value(value).expect("algo-vis: from ID could not be serialized");
+    if let Value::Object(fields) = &raw {
+        if fields.len() == 1 {
+            if let Some(seq) = fields.get("$algoVisFrameRef").and_then(Value::as_u64) {
+                return Origin::Frame(FrameRef(seq));
+            }
+        }
+    }
+    match raw {
+        Value::Array(items) => Origin::Id(items.into_iter().map(normalize_segment).collect()),
+        scalar => Origin::Id(vec![normalize_segment(scalar)]),
+    }
 }
 
 struct Recorder {
@@ -196,7 +231,7 @@ pub fn enabled() -> bool {
 
 pub fn record(
     span: Vec<Value>,
-    from: Option<FrameRef>,
+    from: Option<Origin>,
     fields: Vec<Field>,
     source: (&str, u32),
 ) -> FrameRef {
@@ -205,7 +240,7 @@ pub fn record(
         .lock()
         .expect("algo-vis: recorder lock poisoned");
     let seq = state.next_seq;
-    if let Some(parent) = from {
+    if let Some(Origin::Frame(parent)) = &from {
         assert!(
             parent.0 < seq,
             "algo-vis: from must refer to an earlier frame in this run"
@@ -229,8 +264,10 @@ pub fn record(
         "source": {"file": source.0, "line": source.1},
         "runId": state.run_id, "pid": std::process::id(), "producer": "rust"
     });
-    if let Some(parent) = from {
-        event["from"] = json!(parent.0.to_string());
+    match from {
+        Some(Origin::Frame(parent)) => event["from"] = json!(parent.0.to_string()),
+        Some(Origin::Id(id)) => event["fromId"] = Value::Array(id),
+        None => {}
     }
     if seq == 0 {
         event["values"] = Value::Array(state.values.values().cloned().collect());
@@ -297,7 +334,7 @@ macro_rules! __record_impl {
 #[macro_export]
 macro_rules! record {
     ([$($span:expr),* $(,)?], from: $from:expr, $($name:ident $(= $value:expr)?),+ $(,)?) => {
-        $crate::__record_impl!([$($span),*], Some($from), $($name $(= $value)?),+)
+        $crate::__record_impl!([$($span),*], Some($crate::origin(&$from)), $($name $(= $value)?),+)
     };
     ([$($span:expr),* $(,)?], $($name:ident $(= $value:expr)?),+ $(,)?) => {
         $crate::__record_impl!([$($span),*], None, $($name $(= $value)?),+)
@@ -322,5 +359,28 @@ mod tests {
                 "key":{"t":"int","v":"1"},"value":{"t":"int","v":"9"}
             }]})
         );
+    }
+
+    #[test]
+    fn accepts_scalar_and_path_origins_while_preserving_frame_references() {
+        match origin(&3_usize) {
+            Origin::Id(id) => assert_eq!(id, vec![json!({"t":"int","v":"3"})]),
+            Origin::Frame(_) => panic!("scalar origin was treated as a frame"),
+        }
+        match origin(&[1_usize, 2]) {
+            Origin::Id(id) => assert_eq!(
+                id,
+                vec![json!({"t":"int","v":"1"}), json!({"t":"int","v":"2"})]
+            ),
+            Origin::Frame(_) => panic!("path origin was treated as a frame"),
+        }
+        match origin(&Option::<i32>::None) {
+            Origin::Id(id) => assert_eq!(id, vec![json!({"t":"null"})]),
+            Origin::Frame(_) => panic!("null origin was treated as a frame"),
+        }
+        match origin(&FrameRef(7)) {
+            Origin::Frame(frame) => assert_eq!(frame.0, 7),
+            Origin::Id(_) => panic!("frame reference was treated as an ID"),
+        }
     }
 }

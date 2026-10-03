@@ -5,14 +5,16 @@
 ```rust
 use algo_vis::record;
 
-let mut left = 0;
-let right = a.len();
-let root = record!([], a, left, right);
-for i in 0..3 {
-    left += 1;
-    record!([i], from: root, a, left, right);
+let adjacency = vec![vec![1, 2], vec![], vec![]];
+let mut seen = vec![false; 3];
+record!([0], adjacency, seen, v = 0);
+for &v in &adjacency[0] {
+    seen[v] = true;
+    record!([v], from: 0, adjacency, seen, v);
 }
 ```
+
+`from: 0` は親のspan ID `[0]` を指す。SDKはこれを型付きの `fromId` として送る。`record!([i, j], from: [pi, pj], ...)` のようにIDのパス全体も指定できる。同じIDの記録が複数ある場合は、対象より前にある最新の記録へ結ぶ。従来の `let parent = record!(...); record!(..., from: parent, ...)` も使用でき、この場合の `FrameRef` は従来のseq参照 `from` として送る。
 
 ローカルの Cargo プロジェクトには path dependency として追加する。
 
