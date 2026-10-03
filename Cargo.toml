@@ -2,7 +2,7 @@
 name = "algo-vis"
 version = "0.1.0"
 edition = "2021"
-description = "Record typed algorithm state for the algo-vis local visualizer"
+description = "Record typed algorithm state for the TracePrism local visualizer"
 readme = "README.md"
 
 [dependencies]
