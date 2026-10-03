@@ -21,7 +21,7 @@ impl Serialize for FrameRef {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         // Distinguishes a frame handle from a user ID in the generic `from:` macro argument.
         let mut map = serializer.serialize_map(Some(1))?;
-        map.serialize_entry("$algoVisFrameRef", &self.0)?;
+        map.serialize_entry("$tracePrismFrameRef", &self.0)?;
         map.end()
     }
 }
@@ -43,7 +43,7 @@ pub fn field<T: Serialize + ?Sized>(name: &'static str, value: &T) -> Field {
         name,
         rust_type,
         value: normalize(
-            serde_json::to_value(value).expect("algo-vis: value could not be serialized"),
+            serde_json::to_value(value).expect("TracePrism: value could not be serialized"),
             rust_type,
         ),
     }
@@ -85,7 +85,7 @@ fn normalize(value: Value, hint: &str) -> Value {
                 .map(|(key, value)| {
                     let typed_key = if is_integer_type(key_hint) {
                         if key.parse::<i128>().is_err() && key.parse::<u128>().is_err() {
-                            panic!("algo-vis: invalid integer map key")
+                            panic!("TracePrism: invalid integer map key")
                         }
                         json!({"t":"int","v":key})
                     } else if key_hint == "bool" {
@@ -137,22 +137,22 @@ fn normalize_segment(raw: Value) -> Value {
         Value::Number(n) if is_integer_number(n) => "int",
         Value::Number(_) => "float",
         Value::String(_) => "string",
-        _ => panic!("algo-vis: span ID must be a scalar"),
+        _ => panic!("TracePrism: span ID must be a scalar"),
     };
     json!({"t": kind, "v": if raw.is_number() { Value::String(raw.to_string()) } else { raw }})
 }
 
 pub fn span_segment<T: Serialize + ?Sized>(value: &T) -> Value {
     normalize_segment(
-        serde_json::to_value(value).expect("algo-vis: span ID could not be serialized"),
+        serde_json::to_value(value).expect("TracePrism: span ID could not be serialized"),
     )
 }
 
 pub fn origin<T: Serialize + ?Sized>(value: &T) -> Origin {
-    let raw = serde_json::to_value(value).expect("algo-vis: from ID could not be serialized");
+    let raw = serde_json::to_value(value).expect("TracePrism: from ID could not be serialized");
     if let Value::Object(fields) = &raw {
         if fields.len() == 1 {
-            if let Some(seq) = fields.get("$algoVisFrameRef").and_then(Value::as_u64) {
+            if let Some(seq) = fields.get("$tracePrismFrameRef").and_then(Value::as_u64) {
                 return Origin::Frame(FrameRef(seq));
             }
         }
@@ -186,7 +186,7 @@ fn recorder() -> Option<&'static Mutex<Recorder>> {
                     .create(true)
                     .append(true)
                     .open(path)
-                    .expect("algo-vis: cannot open trace file");
+                    .expect("TracePrism: cannot open trace file");
                 Sink::File(BufWriter::new(file))
             } else {
                 let port = std::env::var("VIZ_PORT")
@@ -236,14 +236,14 @@ pub fn record(
     source: (&str, u32),
 ) -> FrameRef {
     let mut state = recorder()
-        .expect("algo-vis: recorder is disabled")
+        .expect("TracePrism: recorder is disabled")
         .lock()
-        .expect("algo-vis: recorder lock poisoned");
+        .expect("TracePrism: recorder lock poisoned");
     let seq = state.next_seq;
     if let Some(Origin::Frame(parent)) = &from {
         assert!(
             parent.0 < seq,
-            "algo-vis: from must refer to an earlier frame in this run"
+            "TracePrism: from must refer to an earlier frame in this run"
         );
     }
     let mut observed = BTreeMap::new();
@@ -274,16 +274,16 @@ pub fn record(
     } else {
         event["ops"] = Value::Array(ops);
     }
-    let body = serde_json::to_vec(&event).expect("algo-vis: event encode failed");
+    let body = serde_json::to_vec(&event).expect("TracePrism: event encode failed");
     match &mut state.sink {
         Sink::File(writer) => {
             writer
                 .write_all(&body)
-                .expect("algo-vis: trace write failed");
+                .expect("TracePrism: trace write failed");
             writer
                 .write_all(b"\n")
-                .expect("algo-vis: trace write failed");
-            writer.flush().expect("algo-vis: trace flush failed");
+                .expect("TracePrism: trace write failed");
+            writer.flush().expect("TracePrism: trace flush failed");
         }
         Sink::Http(port) => {
             let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, *port);
@@ -294,11 +294,11 @@ pub fn record(
                     stream.write_all(&body)?;
                     let mut response = String::new();
                     stream.read_to_string(&mut response)?;
-                    if !response.starts_with("HTTP/1.1 200") { return Err(std::io::Error::other("algo-vis: server rejected frame")); }
+                    if !response.starts_with("HTTP/1.1 200") { return Err(std::io::Error::other("TracePrism: server rejected frame")); }
                     Ok(())
                 });
             if let Err(error) = sent {
-                eprintln!("algo-vis: recording stopped: {error}");
+                eprintln!("TracePrism: recording stopped: {error}");
                 state.sink = Sink::Disabled;
             }
         }

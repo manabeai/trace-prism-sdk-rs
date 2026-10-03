@@ -1,5 +1,5 @@
 [package]
-name = "algo-vis"
+name = "traceprism"
 version = "0.1.0"
 edition = "2021"
 description = "Record typed algorithm state for the TracePrism local visualizer"

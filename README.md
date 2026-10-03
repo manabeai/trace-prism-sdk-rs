@@ -1,9 +1,9 @@
-# TracePrism向け Rust crate（`algo-vis`）
+# TracePrism Rust crate
 
-`algo_vis::record!` は通常の Rust 値を型付きの観測フレームとして送信する。専用の Array・Set・Map 型は不要。span ID の配列、任意の `from` 参照、任意個の値を受け取る。
+`traceprism::record!` は通常の Rust 値を型付きの観測フレームとして送信する。専用の Array・Set・Map 型は不要。span ID の配列、任意の `from` 参照、任意個の値を受け取る。
 
 ```rust
-use algo_vis::record;
+use traceprism::record;
 
 let adjacency = vec![vec![1, 2], vec![], vec![]];
 let mut seen = vec![false; 3];
@@ -21,17 +21,17 @@ for &v in &adjacency[0] {
 ```toml
 [features]
 default = ["viz"]
-viz = ["dep:algo-vis"]
+viz = ["dep:traceprism"]
 
 [dependencies]
-algo-vis = { path = "/home/mana/programs/algo-visualizer/sdk/rust", optional = true }
+traceprism = { path = "/home/mana/programs/algo-visualizer/sdk/rust", optional = true }
 ```
 
 AtCoder に単体ファイルで提出するソースでは、feature がないときだけ空マクロを定義する。この場合、可視化用引数は評価されないため、記録式にアルゴリズム本体の副作用を含めないこと。
 
 ```rust
 #[cfg(feature = "viz")]
-use algo_vis::record;
+use traceprism::record;
 #[cfg(not(feature = "viz"))]
 macro_rules! record { ($($tokens:tt)*) => { () }; }
 ```
