@@ -1,6 +1,6 @@
 # TracePrism Rust crate
 
-`traceprism::record!` は通常の Rust 値を型付きの観測フレームとして記録する。`0.1.0-preview.3` では実行ごとのNDJSONファイルへ直接書き込み、[TracePrismデスクトップアプリ](https://github.com/manabeai/algo-vis)がそのファイルを読み取る。
+`traceprism::record!` は通常の Rust 値を型付きの観測フレームとして記録する。`0.1.0-preview.3` では実行ごとのNDJSONファイルへ直接書き込み、[TracePrismデスクトップアプリ](https://github.com/manabeai/trace-prism)がそのファイルを読み取る。
 
 ```toml
 [features]
@@ -38,4 +38,4 @@ for &v in &adjacency[0] {
 
 各ファイルは `viz.trace/v2` のsnapshotとpatchを改行区切りで保持する。ファイルを開けない、または書き込みに失敗した場合は標準エラーへ通知して記録を停止し、プログラム本体の実行を続ける。標準出力は変更しない。
 
-ビューワの起動方法は[アプリのREADME](https://github.com/manabeai/algo-vis#tauriデスクトップ版プレビュー)を参照。
+ビューワの起動方法は[アプリのREADME](https://github.com/manabeai/trace-prism#tauriデスクトップ版プレビュー)を参照。
