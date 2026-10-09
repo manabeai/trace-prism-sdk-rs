@@ -1,6 +1,6 @@
 # TracePrism Rust crate
 
-`traceprism::record!` は通常の Rust 値を型付きの観測フレームとして記録する。`0.1.0-preview.2` では実行ごとのNDJSONファイルへ直接書き込むため、受信サーバーは不要。旧版 `0.1.0-preview.1` はHTTP送信を使用する。
+`traceprism::record!` は通常の Rust 値を型付きの観測フレームとして記録する。`0.1.0-preview.2` では実行ごとのNDJSONファイルへ直接書き込み、Tauriアプリがそのファイルを読み取る。
 
 ```toml
 [features]
