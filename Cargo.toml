@@ -1,6 +1,6 @@
 [package]
 name = "traceprism"
-version = "0.1.0-preview.1"
+version = "0.1.0-preview.2"
 edition = "2021"
 description = "Record typed algorithm state for the TracePrism local visualizer"
 license = "MIT"

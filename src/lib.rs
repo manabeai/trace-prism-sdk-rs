@@ -2,11 +2,11 @@ use serde::ser::{SerializeMap, Serializer};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Read, Write};
-use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufWriter, Write};
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, Debug)]
 pub struct FrameRef(u64);
@@ -167,13 +167,40 @@ struct Recorder {
     next_seq: u64,
     run_id: String,
     values: BTreeMap<String, Value>,
-    sink: Sink,
+    sink: Option<BufWriter<File>>,
 }
 
-enum Sink {
-    File(BufWriter<File>),
-    Http(u16),
-    Disabled,
+/// SDK とビューワが共有する実行履歴の保存先。
+pub fn run_dir() -> io::Result<PathBuf> {
+    if let Some(path) = std::env::var_os("TRACEPRISM_RUN_DIR") {
+        let path = PathBuf::from(path);
+        if path.is_absolute() {
+            return Ok(path);
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "TRACEPRISM_RUN_DIR must be absolute",
+        ));
+    }
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("APPDATA")
+        .or_else(|| std::env::var_os("LOCALAPPDATA"))
+        .map(PathBuf::from);
+    #[cfg(target_os = "macos")]
+    let base = std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join("Library/Application Support"));
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
+    base.map(|path| path.join("traceprism/runs"))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "user data directory is unavailable",
+            )
+        })
 }
 
 static RECORDER: OnceLock<Option<Mutex<Recorder>>> = OnceLock::new();
@@ -181,25 +208,6 @@ static RECORDER: OnceLock<Option<Mutex<Recorder>>> = OnceLock::new();
 fn recorder() -> Option<&'static Mutex<Recorder>> {
     RECORDER
         .get_or_init(|| {
-            let sink = if let Some(path) = std::env::var_os("VIZ_TRACE_PATH") {
-                let file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .expect("TracePrism: cannot open trace file");
-                Sink::File(BufWriter::new(file))
-            } else {
-                let port = std::env::var("VIZ_PORT")
-                    .ok()
-                    .and_then(|text| text.parse::<u16>().ok())
-                    .unwrap_or(4317);
-                let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
-                if TcpStream::connect_timeout(&address.into(), Duration::from_millis(100)).is_err()
-                {
-                    return None;
-                }
-                Sink::Http(port)
-            };
             let millis = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -215,18 +223,44 @@ fn recorder() -> Option<&'static Mutex<Recorder>> {
                         })
                 })
                 .unwrap_or(generated_id);
+            let path = match std::env::var_os("VIZ_TRACE_PATH") {
+                Some(path) => PathBuf::from(path),
+                None => match run_dir() {
+                    Ok(dir) => dir.join(format!("{run_id}.jsonl")),
+                    Err(error) => {
+                        eprintln!("TracePrism: recording unavailable: {error}");
+                        return None;
+                    }
+                },
+            };
+            let sink = (|| -> io::Result<BufWriter<File>> {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                let file = OpenOptions::new().create(true).append(true).open(path)?;
+                Ok(BufWriter::new(file))
+            })();
+            let sink = match sink {
+                Ok(sink) => sink,
+                Err(error) => {
+                    eprintln!("TracePrism: recording unavailable: {error}");
+                    return None;
+                }
+            };
             Some(Mutex::new(Recorder {
                 next_seq: 0,
                 run_id,
                 values: BTreeMap::new(),
-                sink,
+                sink: Some(sink),
             }))
         })
         .as_ref()
 }
 
 pub fn enabled() -> bool {
-    recorder().is_some()
+    recorder()
+        .and_then(|recorder| recorder.lock().ok().map(|state| state.sink.is_some()))
+        .unwrap_or(false)
 }
 
 pub fn record(
@@ -235,10 +269,15 @@ pub fn record(
     fields: Vec<Field>,
     source: (&str, u32),
 ) -> FrameRef {
-    let mut state = recorder()
-        .expect("TracePrism: recorder is disabled")
-        .lock()
-        .expect("TracePrism: recorder lock poisoned");
+    let Some(recorder) = recorder() else {
+        return FrameRef::disabled();
+    };
+    let Ok(mut state) = recorder.lock() else {
+        return FrameRef::disabled();
+    };
+    if state.sink.is_none() {
+        return FrameRef::disabled();
+    }
     let seq = state.next_seq;
     if let Some(Origin::Frame(parent)) = &from {
         assert!(
@@ -275,34 +314,15 @@ pub fn record(
         event["ops"] = Value::Array(ops);
     }
     let body = serde_json::to_vec(&event).expect("TracePrism: event encode failed");
-    match &mut state.sink {
-        Sink::File(writer) => {
-            writer
-                .write_all(&body)
-                .expect("TracePrism: trace write failed");
-            writer
-                .write_all(b"\n")
-                .expect("TracePrism: trace write failed");
-            writer.flush().expect("TracePrism: trace flush failed");
+    if let Some(writer) = state.sink.as_mut() {
+        if let Err(error) = writer
+            .write_all(&body)
+            .and_then(|()| writer.write_all(b"\n"))
+            .and_then(|()| writer.flush())
+        {
+            eprintln!("TracePrism: recording stopped: {error}");
+            state.sink = None;
         }
-        Sink::Http(port) => {
-            let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, *port);
-            let sent = TcpStream::connect_timeout(&address.into(), Duration::from_millis(200))
-                .and_then(|mut stream| {
-                    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-                    stream.write_all(format!("POST /api/record HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes())?;
-                    stream.write_all(&body)?;
-                    let mut response = String::new();
-                    stream.read_to_string(&mut response)?;
-                    if !response.starts_with("HTTP/1.1 200") { return Err(std::io::Error::other("TracePrism: server rejected frame")); }
-                    Ok(())
-                });
-            if let Err(error) = sent {
-                eprintln!("TracePrism: recording stopped: {error}");
-                state.sink = Sink::Disabled;
-            }
-        }
-        Sink::Disabled => {}
     }
     state.next_seq += 1;
     FrameRef(seq)

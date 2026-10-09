@@ -1,5 +1,9 @@
 # TracePrism Rust crate
 
+このブランチでは記録先を実行ごとのNDJSONファイルに変更した。公開済みの `0.1.0-preview.1` は旧HTTP版で、この変更はまだ含まれない。ファイル連携を試す場合はCargo依存をこのブランチの `sdk/rust` への `path` に変更する。通常の `cargo run` で記録でき、受信サーバーは不要。I/Oに失敗しても標準エラーへ通知して本体の実行を続ける。保存先はルートREADMEのOS別表を参照。`TRACEPRISM_RUN_DIR` は絶対パスの保存ディレクトリ、`VIZ_TRACE_PATH` は個別ファイル、`VIZ_RUN_ID` は実行IDを指定する。
+
+以下は公開済み旧HTTP版の説明である。
+
 `traceprism::record!` は通常の Rust 値を型付きの観測フレームとして送信する。専用の Array・Set・Map 型は不要。span ID の配列、任意の `from` 参照、任意個の値を受け取る。
 
 現在の公開版は `0.1.0-preview.1`。API と送信形式はプレリリース中に変更される可能性がある。
