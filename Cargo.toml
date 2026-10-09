@@ -1,8 +1,10 @@
 [package]
 name = "traceprism"
-version = "0.1.0"
+version = "0.1.0-preview.1"
 edition = "2021"
 description = "Record typed algorithm state for the TracePrism local visualizer"
+license = "MIT"
+repository = "https://github.com/manabeai/algo-vis"
 readme = "README.md"
 
 [dependencies]
